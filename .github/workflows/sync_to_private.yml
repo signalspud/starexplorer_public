@@ -43,7 +43,7 @@ jobs:
 
       - name: Update private issue if exists
         if: steps.extract.outputs.private != ''
-        uses: peter-evans/create-or-update-issue@v3
+        uses: peter-evans/create-or-update-issue@v4
         with:
           token: ${{ secrets.PRIVATE_STARS_TOKEN }}
           repository: signalspud/starexplorer
@@ -58,7 +58,7 @@ jobs:
 
       - name: Sync labels
         if: steps.extract.outputs.private != ''
-        uses: actions-ecosystem/action-sync-labels@v1
+        uses: EndBug/label-sync@v2
         with:
           github_token: ${{ secrets.PRIVATE_STARS_TOKEN }}
           source_repo: signalspud/starexplorer_public
