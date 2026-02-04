@@ -24,61 +24,60 @@ jobs:
       - name: Extract mirrored private issue number
         id: extract
         run: |
-          echo "private=$(echo '${{ github.event.issue.body }}' | grep -o '<!-- mirrored-private: [0-9]* -->' | grep -o '[0-9]*')" >> $GITHUB_OUTPUT
+          BODY="${{ github.event.issue.body }}"
+          MATCH=$(printf '%s\n' "$BODY" | grep -o '<!-- mirrored-private: [0-9]* -->' | grep -o '[0-9]*' || true)
+          echo "private=$MATCH" >> "$GITHUB_OUTPUT"
 
-      - name: Create private issue body file
+      - name: Create private issue if missing
         if: steps.extract.outputs.private == ''
         run: |
-          cat > issue_body.md <<EOF
-<!-- mirrored-public: ${{ github.event.issue.number }} -->
-Mirrored from public issue: ${{ github.event.issue.html_url }}
+          TITLE="${{ github.event.issue.title }}"
+          BODY="<!-- mirrored-public: ${{ github.event.issue.number }} -->\nMirrored from public issue: ${{ github.event.issue.html_url }}\n\n---\n${{ github.event.issue.body }}"
 
----
-  ${{ github.event.issue.body }}
-  EOF
+          ISSUE_JSON=$(jq -n \
+            --arg title "$TITLE" \
+            --arg body "$BODY" \
+            '{title: $title, body: $body}')
 
-- name: Create private issue if missing
-  if: steps.extract.outputs.private == ''
-  uses: peter-evans/create-issue-from-file@v4
-  with:
-    token: ${{ secrets.PRIVATE_STARS_TOKEN }}
-    repository: signalspud/starexplorer
-    title: "${{ github.event.issue.title }}"
-    content-filepath: issue_body.md
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/signalspud/starexplorer/issues \
+            -d "$ISSUE_JSON"
 
-- name: Update private issue if exists
-  if: steps.extract.outputs.private != ''
-  run: |
-    BODY="<!-- mirrored-public: ${{ github.event.issue.number }} -->\nMirrored from public issue: ${{ github.event.issue.html_url }}\n\n---\n${{ github.event.issue.body }}"
-    ISSUE_JSON=$(jq -n \
-      --arg title "${{ github.event.issue.title }}" \
-      --arg body "$BODY" \
-      '{title: $title, body: $body}')
-    echo "$ISSUE_JSON" > issue.json
-    
-    curl -X PATCH \
-      -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
-      -H "Accept: application/vnd.github+json" \
-      https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }} \
-      -d @issue.json
+      - name: Update private issue if exists
+        if: steps.extract.outputs.private != ''
+        run: |
+          TITLE="${{ github.event.issue.title }}"
+          BODY="<!-- mirrored-public: ${{ github.event.issue.number }} -->\nMirrored from public issue: ${{ github.event.issue.html_url }}\n\n---\n${{ github.event.issue.body }}"
 
-- name: Sync labels
-  if: steps.extract.outputs.private != ''
-  uses: EndBug/label-sync@v2
-  with:
-    github_token: ${{ secrets.PRIVATE_STARS_TOKEN }}
-    source_repo: signalspud/starexplorer_public
-    target_repo: signalspud/starexplorer
+          ISSUE_JSON=$(jq -n \
+            --arg title "$TITLE" \
+            --arg body "$BODY" \
+            '{title: $title, body: $body}')
 
-- name: Mirror comments
-  if: github.event_name == 'issue_comment'
-  run: |
-    COMMENT_BODY="**Public comment by @${{ github.actor }}**\n\n${{ github.event.comment.body }}"
-    COMMENT_JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
-    echo "$COMMENT_JSON" > comment.json
-    
-    curl -X POST \
-      -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
-      -H "Accept: application/vnd.github+json" \
-      https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}/comments \
-      -d @comment.json
+          curl -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }} \
+            -d "$ISSUE_JSON"
+
+      - name: Sync labels
+        if: steps.extract.outputs.private != ''
+        uses: EndBug/label-sync@v2
+        with:
+          github_token: ${{ secrets.PRIVATE_STARS_TOKEN }}
+          source_repo: signalspud/starexplorer_public
+          target_repo: signalspud/starexplorer
+
+      - name: Mirror comments
+        if: github.event_name == 'issue_comment'
+        run: |
+          COMMENT_BODY="**Public comment by @${{ github.actor }}**\n\n${{ github.event.comment.body }}"
+          COMMENT_JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
+
+          curl -X POST \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}/comments \
+            -d "$COMMENT_JSON"
