@@ -43,7 +43,7 @@ jobs:
 
       - name: Update private issue if exists
         if: steps.extract.outputs.private != ''
-        uses: peter-evans/create-or-update-issue@v4
+        uses: peter-evans/update-issue@v2
         with:
           token: ${{ secrets.PRIVATE_STARS_TOKEN }}
           repository: signalspud/starexplorer
