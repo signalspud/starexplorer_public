@@ -25,7 +25,7 @@ jobs:
         if: steps.extract.outputs.private == ''
         uses: peter-evans/create-issue-from-file@v4
         with:
-          token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          token: ${{ secrets.PRIVATE_STARS_TOKEN }}
           repository: signalspud/starexplorer
           title: "${{ github.event.issue.title }}"
           content-filepath: .github/empty.md
@@ -40,7 +40,7 @@ jobs:
         if: steps.extract.outputs.private != ''
         uses: peter-evans/create-or-update-issue@v3
         with:
-          token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          token: ${{ secrets.PRIVATE_STARS_TOKEN }}
           repository: signalspud/starexplorer
           issue-number: ${{ steps.extract.outputs.private }}
           title: "${{ github.event.issue.title }}"
@@ -55,7 +55,7 @@ jobs:
         if: steps.extract.outputs.private != ''
         uses: actions-ecosystem/action-sync-labels@v1
         with:
-          github_token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          github_token: ${{ secrets.PRIVATE_STARS_TOKEN }}
           source_repo: signalspud/starexplorer_public
           target_repo: signalspud/starexplorer
 
@@ -63,7 +63,7 @@ jobs:
         if: github.event_name == 'issue_comment'
         uses: peter-evans/create-or-update-comment@v3
         with:
-          token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          token: ${{ secrets.PRIVATE_STARS_TOKEN }}
           repository: signalspud/starexplorer
           issue-number: ${{ steps.extract.outputs.private }}
           body: |
