@@ -1,0 +1,66 @@
+name: Sync Public Issues to Private
+
+on:
+  issues:
+    types: [opened, edited, closed, reopened, labeled, unlabeled]
+  issue_comment:
+    types: [created]
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Extract mirrored private issue number
+        id: extract
+        run: |
+          echo "private=$(echo '${{ github.event.issue.body }}' | grep -o '<!-- mirrored-private: [0-9]* -->' | grep -o '[0-9]*')" >> $GITHUB_OUTPUT
+
+      - name: Create private issue if missing
+        if: steps.extract.outputs.private == ''
+        uses: peter-evans/create-issue-from-file@v4
+        with:
+          token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          repository: signalspud/starexplorer
+          title: "${{ github.event.issue.title }}"
+          content-filepath: .github/empty.md
+          body: |
+            <!-- mirrored-public: ${{ github.event.issue.number }} -->
+            Mirrored from public issue: ${{ github.event.issue.html_url }}
+
+            ---
+            ${{ github.event.issue.body }}
+
+      - name: Update private issue if exists
+        if: steps.extract.outputs.private != ''
+        uses: peter-evans/create-or-update-issue@v3
+        with:
+          token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          repository: signalspud/starexplorer
+          issue-number: ${{ steps.extract.outputs.private }}
+          title: "${{ github.event.issue.title }}"
+          body: |
+            <!-- mirrored-public: ${{ github.event.issue.number }} -->
+            Mirrored from public issue: ${{ github.event.issue.html_url }}
+
+            ---
+            ${{ github.event.issue.body }}
+
+      - name: Sync labels
+        if: steps.extract.outputs.private != ''
+        uses: actions-ecosystem/action-sync-labels@v1
+        with:
+          github_token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          source_repo: signalspud/starexplorer_public
+          target_repo: signalspud/starexplorer
+
+      - name: Mirror comments
+        if: github.event_name == 'issue_comment'
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          token: ${{ secrets.PUBLIC_STARS_TOKEN }}
+          repository: signalspud/starexplorer
+          issue-number: ${{ steps.extract.outputs.private }}
+          body: |
+            **Public comment by @${{ github.actor }}**
+            ${{ github.event.comment.body }}
