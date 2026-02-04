@@ -1,5 +1,10 @@
 name: Sync Public Issues to Private
 
+permissions:
+  contents: write
+  actions: read
+  issues: write
+
 on:
   issues:
     types: [opened, edited, closed, reopened, labeled, unlabeled]
