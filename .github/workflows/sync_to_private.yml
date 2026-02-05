@@ -26,7 +26,7 @@ jobs:
         run: |
           BODY="${{ github.event.issue.body }}"
           MATCH=$(printf '%s\n' "$BODY" | grep -o '<!-- mirrored-private: [0-9]* -->' | grep -o '[0-9]*' || true)
-          echo "private=$MATCH" >> "$GITHUB_OUTPUT"
+          echo "private=${MATCH:-}" >> "$GITHUB_OUTPUT"
 
       - name: Create private issue if missing
         if: steps.extract.outputs.private == ''
@@ -71,7 +71,7 @@ jobs:
           target_repo: signalspud/starexplorer
 
       - name: Mirror comments
-        if: github.event_name == 'issue_comment'
+        if: github.event_name == 'issue_comment' && steps.extract.outputs.private != ''
         run: |
           COMMENT_BODY="**Public comment by @${{ github.actor }}**\n\n${{ github.event.comment.body }}"
           COMMENT_JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
