@@ -66,8 +66,8 @@ jobs:
         if: steps.extract.outputs.private != ''
         uses: EndBug/label-sync@v2
         with:
-          github_token: ${{ secrets.PRIVATE_STARS_TOKEN }}
-          source_repo: signalspud/starexplorer_public
+          token: ${{ secrets.PRIVATE_STARS_TOKEN }}
+          source-repo: signalspud/starexplorer_public
 
       - name: Mirror comments
         if: github.event_name == 'issue_comment' && steps.extract.outputs.private != ''
