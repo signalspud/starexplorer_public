@@ -22,14 +22,20 @@ jobs:
           set -euo pipefail
 
           BODY="${{ github.event.issue.body }}"
-          MATCH=$(printf '%s\n' "$BODY" | grep -o '<!-- mirrored-private: [0-9]\+ -->' | grep -o '[0-9]\+' || true)
 
-          if [ -n "$MATCH" ] && ! printf '%s' "$MATCH" | grep -Eq '^[0-9]+$'; then
-            echo "Found mirrored-private marker but value is not numeric: $MATCH" >&2
-            exit 1
+          # Extract ALL matches, then pick the FIRST clean numeric one
+          MATCH=$(printf '%s\n' "$BODY" \
+            | grep -o '<!-- mirrored-private: [0-9]\+ -->' \
+            | grep -o '[0-9]\+' \
+            | head -n 1 \
+            || true)
+
+          # If MATCH contains anything other than digits, clear it
+          if ! printf '%s' "$MATCH" | grep -Eq '^[0-9]+$'; then
+            MATCH=""
           fi
 
-          printf 'private=%s\n' "${MATCH:-}" >> "$GITHUB_OUTPUT"
+          printf 'private=%s\n' "$MATCH" >> "$GITHUB_OUTPUT"
 
       - name: Create private issue if missing
         if: steps.extract.outputs.private == '' && github.event_name == 'issues'
