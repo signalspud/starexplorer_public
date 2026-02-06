@@ -19,97 +19,209 @@ jobs:
       - name: Extract mirrored private issue number
         id: extract
         run: |
+          set -euo pipefail
+
           BODY="${{ github.event.issue.body }}"
-          MATCH=$(printf '%s\n' "$BODY" | grep -o '<!-- mirrored-private: [0-9]* -->' | grep -o '[0-9]*' || true)
-          echo "private=${MATCH:-}" >> "$GITHUB_OUTPUT"
+          MATCH=$(printf '%s\n' "$BODY" | grep -o '<!-- mirrored-private: [0-9]\+ -->' | grep -o '[0-9]\+' || true)
+
+          if [ -n "$MATCH" ] && ! printf '%s' "$MATCH" | grep -Eq '^[0-9]+$'; then
+            echo "Found mirrored-private marker but value is not numeric: $MATCH" >&2
+            exit 1
+          fi
+
+          printf 'private=%s\n' "${MATCH:-}" >> "$GITHUB_OUTPUT"
 
       - name: Create private issue if missing
-        if: steps.extract.outputs.private == ''
+        if: steps.extract.outputs.private == '' && github.event_name == 'issues'
         run: |
+          set -euo pipefail
+
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until [ "$n" -ge "$max" ]; do
+              "$@" && return 0 || {
+                n=$((n+1))
+                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
+                sleep "$delay"
+              }
+            done
+            return 1
+          }
+
           TITLE="${{ github.event.issue.title }}"
-          BODY=$(printf "%s\n%s\n\n---\n%s" \ "<!-- mirrored-public: ${{ github.event.issue.number }} -->" \ "Mirrored from public issue: ${{ github.event.issue.html_url }}" \ "${{ github.event.issue.body }}" )
-          
+          BODY=$(printf "%s\n%s\n\n---\n%s" \
+            "<!-- mirrored-public: ${{ github.event.issue.number }} -->" \
+            "Mirrored from public issue: ${{ github.event.issue.html_url }}" \
+            "${{ github.event.issue.body }}")
+
           ISSUE_JSON=$(jq -n \
             --arg title "$TITLE" \
             --arg body "$BODY" \
             '{title: $title, body: $body}')
 
-          RESPONSE=$(curl -s -X POST \
+          RESPONSE=$(retry curl -sS -X POST \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/signalspud/starexplorer/issues \
             -d "$ISSUE_JSON")
 
-          NEW_NUMBER=$(echo "$RESPONSE" | jq -r '.number')
-          echo "private=$NEW_NUMBER" >> "$GITHUB_OUTPUT"
+          NEW_NUMBER=$(printf '%s' "$RESPONSE" | jq -r '.number // empty')
+
+          if ! printf '%s' "$NEW_NUMBER" | grep -Eq '^[0-9]+$'; then
+            echo "Error: GitHub API did not return a valid issue number" >&2
+            echo "Response was:" >&2
+            printf '%s\n' "$RESPONSE" >&2
+            exit 1
+          fi
+
+          printf 'private=%s\n' "$NEW_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Update private issue if exists
-        if: steps.extract.outputs.private != ''
+        if: steps.extract.outputs.private != '' && github.event_name == 'issues'
         run: |
+          set -euo pipefail
+
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until [ "$n" -ge "$max" ]; do
+              "$@" && return 0 || {
+                n=$((n+1))
+                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
+                sleep "$delay"
+              }
+            done
+            return 1
+          }
+
           TITLE="${{ github.event.issue.title }}"
-          BODY=$(printf "%s\n%s\n\n---\n%s" \ "<!-- mirrored-public: ${{ github.event.issue.number }} -->" \ "Mirrored from public issue: ${{ github.event.issue.html_url }}" \ "${{ github.event.issue.body }}" )
-          
+          BODY=$(printf "%s\n%s\n\n---\n%s" \
+            "<!-- mirrored-public: ${{ github.event.issue.number }} -->" \
+            "Mirrored from public issue: ${{ github.event.issue.html_url }}" \
+            "${{ github.event.issue.body }}")
+
           ISSUE_JSON=$(jq -n \
             --arg title "$TITLE" \
             --arg body "$BODY" \
             '{title: $title, body: $body}')
 
-          curl -s -X PATCH \
+          retry curl -sS -X PATCH \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }} \
+            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}" \
             -d "$ISSUE_JSON"
 
       - name: Sync labels
-        if: steps.extract.outputs.private != ''
+        if: steps.extract.outputs.private != '' && github.event_name == 'issues'
         run: |
-          LABELS=$(printf '%s\n' "${{ toJson(github.event.issue.labels) }}" | jq '[.[].name]')
-          JSON=$(jq -n --argjson labels "$LABELS" '{labels: $labels}')
+          set -euo pipefail
 
-          curl -s -X PUT \
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until [ "$n" -ge "$max" ]; do
+              "$@" && return 0 || {
+                n=$((n+1))
+                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
+                sleep "$delay"
+              }
+            done
+            return 1
+          }
+
+          LABELS_JSON=$(printf '%s\n' "${{ toJson(github.event.issue.labels) }}" | jq '[.[].name]')
+          JSON=$(jq -n --argjson labels "$LABELS_JSON" '{labels: $labels}')
+
+          retry curl -sS -X PUT \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}/labels \
+            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}/labels" \
             -d "$JSON"
 
       - name: Sync open/closed state
-        if: steps.extract.outputs.private != ''
+        if: steps.extract.outputs.private != '' && github.event_name == 'issues'
         run: |
+          set -euo pipefail
+
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until [ "$n" -ge "$max" ]; do
+              "$@" && return 0 || {
+                n=$((n+1))
+                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
+                sleep "$delay"
+              }
+            done
+            return 1
+          }
+
           STATE="${{ github.event.issue.state }}"
           JSON=$(jq -n --arg state "$STATE" '{state: $state}')
 
-          curl -s -X PATCH \
+          retry curl -sS -X PATCH \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }} \
+            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}" \
             -d "$JSON"
 
-      - name: Mirror comments with dedup
+      - name: Mirror comments with hash dedup and loop protection
         if: github.event_name == 'issue_comment' && steps.extract.outputs.private != ''
         run: |
+          set -euo pipefail
+
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until [ "$n" -ge "$max" ]; do
+              "$@" && return 0 || {
+                n=$((n+1))
+                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
+                sleep "$delay"
+              }
+            done
+            return 1
+          }
+
+          # Prevent loops: if this comment already looks like a mirrored one, bail
+          if printf '%s\n' "${{ github.event.comment.body }}" | grep -q '^**Private comment by @'; then
+            echo "Comment appears to be a mirrored private comment, skipping to avoid loop."
+            exit 0
+          fi
+
           PREFIX="**Public comment by @${{ github.actor }}**"
-          COMMENT_BODY="${PREFIX}\n\n${{ github.event.comment.body }}"
+          RAW_BODY="${{ github.event.comment.body }}"
+          COMMENT_BODY="${PREFIX}\n\n${RAW_BODY}"
+
+          HASH=$(printf '%s' "$COMMENT_BODY" | sha256sum | cut -d ' ' -f1)
+          COMMENT_WITH_HASH="${COMMENT_BODY}\n\n<!-- mirror-hash: ${HASH} -->"
+
           TARGET_REPO="signalspud/starexplorer"
           TARGET_ISSUE="${{ steps.extract.outputs.private }}"
 
-          # Fetch existing comments and check for duplicate body
-          EXISTING=$(curl -s \
+          EXISTING=$(retry curl -sS \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments")
 
-          DUPLICATE=$(echo "$EXISTING" | jq --arg body "$COMMENT_BODY" '
-            map(select(.body == $body)) | length > 0
+          DUPLICATE=$(printf '%s' "$EXISTING" | jq --arg hash "$HASH" '
+            map(select(.body | contains($hash))) | length > 0
           ')
 
           if [ "$DUPLICATE" = "true" ]; then
-            echo "Comment already mirrored, skipping."
+            echo "Comment already mirrored (hash match), skipping."
             exit 0
           fi
 
-          JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
+          JSON=$(jq -n --arg body "$COMMENT_WITH_HASH" '{body: $body}')
 
-          curl -s -X POST \
+          retry curl -sS -X POST \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments" \
