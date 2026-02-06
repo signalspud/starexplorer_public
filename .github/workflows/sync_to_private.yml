@@ -13,11 +13,6 @@ on:
 
 jobs:
   sync:
-    permissions:
-      contents: write
-      actions: read
-      issues: write
-
     runs-on: ubuntu-latest
 
     steps:
@@ -39,11 +34,14 @@ jobs:
             --arg body "$BODY" \
             '{title: $title, body: $body}')
 
-          curl -X POST \
+          RESPONSE=$(curl -s -X POST \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/signalspud/starexplorer/issues \
-            -d "$ISSUE_JSON"
+            -d "$ISSUE_JSON")
+
+          NEW_NUMBER=$(echo "$RESPONSE" | jq -r '.number')
+          echo "private=$NEW_NUMBER" >> "$GITHUB_OUTPUT"
 
       - name: Update private issue if exists
         if: steps.extract.outputs.private != ''
@@ -56,7 +54,7 @@ jobs:
             --arg body "$BODY" \
             '{title: $title, body: $body}')
 
-          curl -X PATCH \
+          curl -s -X PATCH \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }} \
@@ -64,19 +62,55 @@ jobs:
 
       - name: Sync labels
         if: steps.extract.outputs.private != ''
-        uses: EndBug/label-sync@v2
-        with:
-          token: ${{ secrets.PRIVATE_STARS_TOKEN }}
-          source-repo: signalspud/starexplorer_public
-
-      - name: Mirror comments
-        if: github.event_name == 'issue_comment' && steps.extract.outputs.private != ''
         run: |
-          COMMENT_BODY="**Public comment by @${{ github.actor }}**\n\n${{ github.event.comment.body }}"
-          COMMENT_JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
+          LABELS=$(printf '%s\n' "${{ toJson(github.event.issue.labels) }}" | jq '[.[].name]')
+          JSON=$(jq -n --argjson labels "$LABELS" '{labels: $labels}')
 
-          curl -X POST \
+          curl -s -X PUT \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}/comments \
-            -d "$COMMENT_JSON"
+            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}/labels \
+            -d "$JSON"
+
+      - name: Sync open/closed state
+        if: steps.extract.outputs.private != ''
+        run: |
+          STATE="${{ github.event.issue.state }}"
+          JSON=$(jq -n --arg state "$STATE" '{state: $state}')
+
+          curl -s -X PATCH \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }} \
+            -d "$JSON"
+
+      - name: Mirror comments with dedup
+        if: github.event_name == 'issue_comment' && steps.extract.outputs.private != ''
+        run: |
+          PREFIX="**Public comment by @${{ github.actor }}**"
+          COMMENT_BODY="${PREFIX}\n\n${{ github.event.comment.body }}"
+          TARGET_REPO="signalspud/starexplorer"
+          TARGET_ISSUE="${{ steps.extract.outputs.private }}"
+
+          # Fetch existing comments and check for duplicate body
+          EXISTING=$(curl -s \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments")
+
+          DUPLICATE=$(echo "$EXISTING" | jq --arg body "$COMMENT_BODY" '
+            map(select(.body == $body)) | length > 0
+          ')
+
+          if [ "$DUPLICATE" = "true" ]; then
+            echo "Comment already mirrored, skipping."
+            exit 0
+          fi
+
+          JSON=$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')
+
+          curl -s -X POST \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments" \
+            -d "$JSON"
