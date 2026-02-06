@@ -27,8 +27,8 @@ jobs:
         if: steps.extract.outputs.private == ''
         run: |
           TITLE="${{ github.event.issue.title }}"
-          BODY="<!-- mirrored-public: ${{ github.event.issue.number }} -->\nMirrored from public issue: ${{ github.event.issue.html_url }}\n\n---\n${{ github.event.issue.body }}"
-
+          BODY=$(printf "%s\n%s\n\n---\n%s" \ "<!-- mirrored-public: ${{ github.event.issue.number }} -->" \ "Mirrored from public issue: ${{ github.event.issue.html_url }}" \ "${{ github.event.issue.body }}" )
+          
           ISSUE_JSON=$(jq -n \
             --arg title "$TITLE" \
             --arg body "$BODY" \
@@ -47,8 +47,8 @@ jobs:
         if: steps.extract.outputs.private != ''
         run: |
           TITLE="${{ github.event.issue.title }}"
-          BODY="<!-- mirrored-public: ${{ github.event.issue.number }} -->\nMirrored from public issue: ${{ github.event.issue.html_url }}\n\n---\n${{ github.event.issue.body }}"
-
+          BODY=$(printf "%s\n%s\n\n---\n%s" \ "<!-- mirrored-public: ${{ github.event.issue.number }} -->" \ "Mirrored from public issue: ${{ github.event.issue.html_url }}" \ "${{ github.event.issue.body }}" )
+          
           ISSUE_JSON=$(jq -n \
             --arg title "$TITLE" \
             --arg body "$BODY" \
