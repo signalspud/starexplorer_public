@@ -217,10 +217,10 @@ jobs:
 
           PREFIX="**Public comment by @${{ github.actor }}**"
           RAW_BODY="${{ github.event.comment.body }}"
-          COMMENT_BODY="${PREFIX}\n\n${RAW_BODY}"
+          COMMENT_BODY=$(printf '%s\n\n%s' "$PREFIX" "$RAW_BODY")
 
           HASH=$(printf '%s' "$COMMENT_BODY" | sha256sum | cut -d ' ' -f1)
-          COMMENT_WITH_HASH="${COMMENT_BODY}\n\n<!-- mirror-hash: ${HASH} -->"
+          COMMENT_WITH_HASH=$(printf '%s\n\n<!-- mirror-hash: %s -->' "$COMMENT_BODY" "$HASH")
 
           TARGET_REPO="signalspud/starexplorer"
           TARGET_ISSUE="${{ steps.extract.outputs.private }}"
