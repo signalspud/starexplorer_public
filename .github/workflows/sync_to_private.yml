@@ -19,7 +19,20 @@ jobs:
       && github.event.sender.type != 'Bot'
 
     steps:
+      - name: Skip if mirrored from private
+        id: guard
+        run: |
+          set -euo pipefail
+          BODY="${{ github.event.issue.body }}"
+          if printf '%s\n' "$BODY" | grep -q 'Mirrored from private issue'; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Issue originated from private repo, skipping."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract mirrored private issue number
+        if: steps.guard.outputs.skip != 'true'
         id: extract
         run: |
           set -euo pipefail
@@ -41,7 +54,8 @@ jobs:
           printf 'private=%s\n' "$MATCH" >> "$GITHUB_OUTPUT"
 
       - name: Create private issue if missing
-        if: steps.extract.outputs.private == '' && github.event_name == 'issues'
+        if: steps.guard.outputs.skip != 'true' && steps.extract.outputs.private == '' && github.event_name == 'issues'
+        id: create
         run: |
           set -euo pipefail
 
@@ -98,8 +112,19 @@ jobs:
             "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}" \
             -d "$UPDATE_JSON"
 
+      - name: Resolve private issue number
+        if: steps.guard.outputs.skip != 'true'
+        id: resolve
+        run: |
+          set -euo pipefail
+          PRIVATE="${{ steps.extract.outputs.private }}"
+          if [ -z "$PRIVATE" ]; then
+            PRIVATE="${{ steps.create.outputs.private }}"
+          fi
+          printf 'private=%s\n' "$PRIVATE" >> "$GITHUB_OUTPUT"
+
       - name: Update private issue if exists
-        if: steps.extract.outputs.private != '' && github.event_name == 'issues'
+        if: steps.guard.outputs.skip != 'true' && steps.extract.outputs.private != '' && github.event_name == 'issues'
         run: |
           set -euo pipefail
 
@@ -135,7 +160,7 @@ jobs:
             -d "$ISSUE_JSON"
 
       - name: Sync labels
-        if: steps.extract.outputs.private != '' && github.event_name == 'issues'
+        if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != '' && github.event_name == 'issues'
         run: |
           set -euo pipefail
 
@@ -159,11 +184,11 @@ jobs:
           retry curl -sS -X PUT \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}/labels" \
+            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.resolve.outputs.private }}/labels" \
             -d "$JSON"
 
       - name: Sync open/closed state
-        if: steps.extract.outputs.private != '' && github.event_name == 'issues'
+        if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != '' && github.event_name == 'issues'
         run: |
           set -euo pipefail
 
@@ -187,11 +212,11 @@ jobs:
           retry curl -sS -X PATCH \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.extract.outputs.private }}" \
+            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.resolve.outputs.private }}" \
             -d "$JSON"
 
       - name: Mirror comments with hash dedup and loop protection
-        if: github.event_name == 'issue_comment' && steps.extract.outputs.private != ''
+        if: steps.guard.outputs.skip != 'true' && github.event_name == 'issue_comment' && steps.resolve.outputs.private != ''
         run: |
           set -euo pipefail
 
@@ -223,7 +248,7 @@ jobs:
           COMMENT_WITH_HASH=$(printf '%s\n\n<!-- mirror-hash: %s -->' "$COMMENT_BODY" "$HASH")
 
           TARGET_REPO="signalspud/starexplorer"
-          TARGET_ISSUE="${{ steps.extract.outputs.private }}"
+          TARGET_ISSUE="${{ steps.resolve.outputs.private }}"
 
           EXISTING=$(retry curl -sS \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
