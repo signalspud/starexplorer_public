@@ -215,6 +215,61 @@ jobs:
             "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.resolve.outputs.private }}" \
             -d "$JSON"
 
+      - name: Sync issue reactions
+        if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != '' && github.event_name == 'issues'
+        run: |
+          set -euo pipefail
+
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until [ "$n" -ge "$max" ]; do
+              "$@" && return 0 || {
+                n=$((n+1))
+                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
+                sleep "$delay"
+              }
+            done
+            return 1
+          }
+
+          TARGET_REPO="signalspud/starexplorer"
+          TARGET_ISSUE="${{ steps.resolve.outputs.private }}"
+
+          # Get reactions from the public issue
+          PUBLIC_REACTIONS=$(retry curl -sS \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/reactions?per_page=100")
+
+          # Get existing reactions on the private issue
+          PRIVATE_REACTIONS=$(retry curl -sS \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/reactions?per_page=100")
+
+          # Get unique reaction types from public
+          REACTION_TYPES=$(printf '%s' "$PUBLIC_REACTIONS" | jq -r '[.[].content] | unique | .[]')
+
+          # Get existing reaction types on private
+          PRIVATE_TYPES=$(printf '%s' "$PRIVATE_REACTIONS" | jq -r '[.[].content] | unique | .[]')
+
+          # Add each missing reaction type to the private issue
+          for REACTION in $REACTION_TYPES; do
+            if ! printf '%s\n' "$PRIVATE_TYPES" | grep -qx "$REACTION"; then
+              echo "Adding reaction: $REACTION"
+              JSON=$(jq -n --arg content "$REACTION" '{content: $content}')
+              retry curl -sS -X POST \
+                -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/reactions" \
+                -d "$JSON" || true
+            fi
+          done
+
+          echo "Issue reactions synced."
+
       - name: Mirror comments (create or update) with loop protection
         if: steps.guard.outputs.skip != 'true' && github.event_name == 'issue_comment' && steps.resolve.outputs.private != ''
         run: |
@@ -269,26 +324,57 @@ jobs:
               | first | .body | contains($hash)
             ')
 
-            if [ "$HASH_MATCH" = "true" ]; then
-              echo "Comment unchanged (hash match), skipping."
-              exit 0
+            if [ "$HASH_MATCH" != "true" ]; then
+              echo "Updating existing mirrored comment ${MIRROR_COMMENT_ID}."
+              JSON=$(jq -n --arg body "$FULL_BODY" '{body: $body}')
+
+              retry curl -sS -X PATCH \
+                -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${MIRROR_COMMENT_ID}" \
+                -d "$JSON"
+            else
+              echo "Comment text unchanged."
             fi
 
-            echo "Updating existing mirrored comment ${MIRROR_COMMENT_ID}."
-            JSON=$(jq -n --arg body "$FULL_BODY" '{body: $body}')
-
-            retry curl -sS -X PATCH \
-              -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
-              -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${MIRROR_COMMENT_ID}" \
-              -d "$JSON"
+            TARGET_COMMENT_ID="$MIRROR_COMMENT_ID"
           else
             echo "Creating new mirrored comment."
             JSON=$(jq -n --arg body "$FULL_BODY" '{body: $body}')
 
-            retry curl -sS -X POST \
+            RESPONSE=$(retry curl -sS -X POST \
               -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments" \
-              -d "$JSON"
+              -d "$JSON")
+
+            TARGET_COMMENT_ID=$(printf '%s' "$RESPONSE" | jq -r '.id // empty')
+          fi
+
+          # Sync comment reactions
+          if [ -n "$TARGET_COMMENT_ID" ]; then
+            PUBLIC_REACTIONS=$(retry curl -sS \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/issues/comments/${SOURCE_ID}/reactions?per_page=100")
+
+            PRIVATE_REACTIONS=$(retry curl -sS \
+              -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${TARGET_COMMENT_ID}/reactions?per_page=100")
+
+            REACTION_TYPES=$(printf '%s' "$PUBLIC_REACTIONS" | jq -r '[.[].content] | unique | .[]')
+            PRIVATE_TYPES=$(printf '%s' "$PRIVATE_REACTIONS" | jq -r '[.[].content] | unique | .[]')
+
+            for REACTION in $REACTION_TYPES; do
+              if ! printf '%s\n' "$PRIVATE_TYPES" | grep -qx "$REACTION"; then
+                echo "Adding comment reaction: $REACTION"
+                JSON=$(jq -n --arg content "$REACTION" '{content: $content}')
+                retry curl -sS -X POST \
+                  -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+                  -H "Accept: application/vnd.github+json" \
+                  "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${TARGET_COMMENT_ID}/reactions" \
+                  -d "$JSON" || true
+              fi
+            done
           fi
