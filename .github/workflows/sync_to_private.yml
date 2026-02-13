@@ -161,47 +161,43 @@ jobs:
 
       - name: Sync labels
         if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != '' && github.event_name == 'issues'
+        env:
+          TARGET_ISSUE: ${{ steps.resolve.outputs.private }}
+          LABELS_JSON: ${{ toJson(github.event.issue.labels) }}
+          GH_TOKEN: ${{ secrets.PRIVATE_STARS_TOKEN }}
         run: |
           set -euo pipefail
 
-          retry() {
-            local n=0
-            local max=3
-            local delay=2
-            until [ "$n" -ge "$max" ]; do
-              "$@" && return 0 || {
-                n=$((n+1))
-                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
-                sleep "$delay"
-              }
-            done
-            return 1
-          }
+          echo "Syncing labels to private issue #${TARGET_ISSUE}..."
 
           TARGET_REPO="signalspud/starexplorer"
-          TARGET_ISSUE="${{ steps.resolve.outputs.private }}"
 
           # Get public issue labels
-          PUBLIC_LABELS=$(printf '%s\n' "${{ toJson(github.event.issue.labels) }}" | jq '[.[].name]')
+          PUBLIC_LABELS=$(printf '%s\n' "$LABELS_JSON" | jq '[.[].name]')
+          echo "Public labels: ${PUBLIC_LABELS}"
 
           # Get existing private issue labels
-          PRIVATE_LABELS=$(retry curl -sS \
-            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+          PRIVATE_LABELS=$(curl -sS \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/labels" \
             | jq '[.[].name]')
+          echo "Private labels: ${PRIVATE_LABELS}"
 
           # Merge both label sets (union, no duplicates)
           MERGED=$(jq -n --argjson pub "$PUBLIC_LABELS" --argjson priv "$PRIVATE_LABELS" \
             '$pub + $priv | unique')
+          echo "Merged labels: ${MERGED}"
 
           JSON=$(jq -n --argjson labels "$MERGED" '{labels: $labels}')
 
-          retry curl -sS -X PUT \
-            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+          RESPONSE=$(curl -sS -X PUT \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/labels" \
-            -d "$JSON"
+            -d "$JSON")
+
+          echo "Response: $(printf '%s' "$RESPONSE" | jq -r '.[0].name // "error"')"
 
       - name: Sync open/closed state
         if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != '' && github.event_name == 'issues'
