@@ -216,7 +216,7 @@ jobs:
             -d "$JSON"
 
       - name: Sync issue reactions
-        if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != '' && github.event_name == 'issues'
+        if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != ''
         run: |
           set -euo pipefail
 
@@ -351,30 +351,81 @@ jobs:
             TARGET_COMMENT_ID=$(printf '%s' "$RESPONSE" | jq -r '.id // empty')
           fi
 
-          # Sync comment reactions
-          if [ -n "$TARGET_COMMENT_ID" ]; then
-            PUBLIC_REACTIONS=$(retry curl -sS \
+          echo "Comment mirroring done."
+
+      - name: Sync all comment reactions
+        if: steps.guard.outputs.skip != 'true' && steps.resolve.outputs.private != ''
+        run: |
+          set -euo pipefail
+
+          retry() {
+            local n=0
+            local max=3
+            local delay=2
+            until [ "$n" -ge "$max" ]; do
+              "$@" && return 0 || {
+                n=$((n+1))
+                echo "Retry $n/$max failed, retrying in ${delay}s..." >&2
+                sleep "$delay"
+              }
+            done
+            return 1
+          }
+
+          TARGET_REPO="signalspud/starexplorer"
+          TARGET_ISSUE="${{ steps.resolve.outputs.private }}"
+
+          # Fetch all public comments on this issue
+          PUBLIC_COMMENTS=$(retry curl -sS \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.issue.number }}/comments?per_page=100")
+
+          # Fetch all private comments on the mirrored issue
+          PRIVATE_COMMENTS=$(retry curl -sS \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments?per_page=100")
+
+          # For each public comment, find its mirrored private comment and sync reactions
+          PUBLIC_IDS=$(printf '%s' "$PUBLIC_COMMENTS" | jq -r '.[].id')
+
+          for SOURCE_ID in $PUBLIC_IDS; do
+            # Find the mirrored comment on private by mirror-source marker
+            MIRROR_ID=$(printf '%s' "$PRIVATE_COMMENTS" | jq -r --arg sid "$SOURCE_ID" '
+              map(select(.body | contains("<!-- mirror-source: " + $sid + " -->"))) | first | .id // empty
+            ')
+
+            if [ -z "$MIRROR_ID" ]; then
+              continue
+            fi
+
+            # Get reactions from public comment
+            PUB_REACTIONS=$(retry curl -sS \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
               "https://api.github.com/repos/${{ github.repository }}/issues/comments/${SOURCE_ID}/reactions?per_page=100")
 
-            PRIVATE_REACTIONS=$(retry curl -sS \
+            # Get reactions from private mirrored comment
+            PRIV_REACTIONS=$(retry curl -sS \
               -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
               -H "Accept: application/vnd.github+json" \
-              "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${TARGET_COMMENT_ID}/reactions?per_page=100")
+              "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${MIRROR_ID}/reactions?per_page=100")
 
-            REACTION_TYPES=$(printf '%s' "$PUBLIC_REACTIONS" | jq -r '[.[].content] | unique | .[]')
-            PRIVATE_TYPES=$(printf '%s' "$PRIVATE_REACTIONS" | jq -r '[.[].content] | unique | .[]')
+            PUB_TYPES=$(printf '%s' "$PUB_REACTIONS" | jq -r '[.[].content] | unique | .[]')
+            PRIV_TYPES=$(printf '%s' "$PRIV_REACTIONS" | jq -r '[.[].content] | unique | .[]')
 
-            for REACTION in $REACTION_TYPES; do
-              if ! printf '%s\n' "$PRIVATE_TYPES" | grep -qx "$REACTION"; then
-                echo "Adding comment reaction: $REACTION"
+            for REACTION in $PUB_TYPES; do
+              if ! printf '%s\n' "$PRIV_TYPES" | grep -qx "$REACTION"; then
+                echo "Adding reaction $REACTION to mirrored comment $MIRROR_ID (source: $SOURCE_ID)"
                 JSON=$(jq -n --arg content "$REACTION" '{content: $content}')
                 retry curl -sS -X POST \
                   -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
                   -H "Accept: application/vnd.github+json" \
-                  "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${TARGET_COMMENT_ID}/reactions" \
+                  "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${MIRROR_ID}/reactions" \
                   -d "$JSON" || true
               fi
             done
-          fi
+          done
+
+          echo "All comment reactions synced."
