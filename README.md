@@ -1,6 +1,7 @@
 # Star Explorer Web Application
 
-## This is the Public repo created to link GitHub Issues. There is no code in this repo.
+## This is the Public repo created to link GitHub Issues.
+There is no code in this repo.
 
 A full-stack web application for exploring detailed information about 2.5 million stars, their exoplanets, and binary companions. Built with React, Node.js, Express, and PostgreSQL, featuring animated visualizations.
 
