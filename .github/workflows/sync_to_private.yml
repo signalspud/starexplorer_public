@@ -178,13 +178,29 @@ jobs:
             return 1
           }
 
-          LABELS_JSON=$(printf '%s\n' "${{ toJson(github.event.issue.labels) }}" | jq '[.[].name]')
-          JSON=$(jq -n --argjson labels "$LABELS_JSON" '{labels: $labels}')
+          TARGET_REPO="signalspud/starexplorer"
+          TARGET_ISSUE="${{ steps.resolve.outputs.private }}"
+
+          # Get public issue labels
+          PUBLIC_LABELS=$(printf '%s\n' "${{ toJson(github.event.issue.labels) }}" | jq '[.[].name]')
+
+          # Get existing private issue labels
+          PRIVATE_LABELS=$(retry curl -sS \
+            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/labels" \
+            | jq '[.[].name]')
+
+          # Merge both label sets (union, no duplicates)
+          MERGED=$(jq -n --argjson pub "$PUBLIC_LABELS" --argjson priv "$PRIVATE_LABELS" \
+            '$pub + $priv | unique')
+
+          JSON=$(jq -n --argjson labels "$MERGED" '{labels: $labels}')
 
           retry curl -sS -X PUT \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.resolve.outputs.private }}/labels" \
+            "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/labels" \
             -d "$JSON"
 
       - name: Sync open/closed state
