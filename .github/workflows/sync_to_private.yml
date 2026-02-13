@@ -9,7 +9,7 @@ on:
   issues:
     types: [opened, edited, closed, reopened, labeled, unlabeled]
   issue_comment:
-    types: [created]
+    types: [created, edited]
 
 jobs:
   sync:
@@ -215,7 +215,7 @@ jobs:
             "https://api.github.com/repos/signalspud/starexplorer/issues/${{ steps.resolve.outputs.private }}" \
             -d "$JSON"
 
-      - name: Mirror comments with hash dedup and loop protection
+      - name: Mirror comments (create or update) with loop protection
         if: steps.guard.outputs.skip != 'true' && github.event_name == 'issue_comment' && steps.resolve.outputs.private != ''
         run: |
           set -euo pipefail
@@ -240,34 +240,55 @@ jobs:
             exit 0
           fi
 
+          SOURCE_ID="${{ github.event.comment.id }}"
           PREFIX="**Public comment by @${{ github.actor }}**"
           RAW_BODY="${{ github.event.comment.body }}"
           COMMENT_BODY=$(printf '%s\n\n%s' "$PREFIX" "$RAW_BODY")
 
           HASH=$(printf '%s' "$COMMENT_BODY" | sha256sum | cut -d ' ' -f1)
-          COMMENT_WITH_HASH=$(printf '%s\n\n<!-- mirror-hash: %s -->' "$COMMENT_BODY" "$HASH")
+          FULL_BODY=$(printf '%s\n\n<!-- mirror-source: %s -->\n<!-- mirror-hash: %s -->' "$COMMENT_BODY" "$SOURCE_ID" "$HASH")
 
           TARGET_REPO="signalspud/starexplorer"
           TARGET_ISSUE="${{ steps.resolve.outputs.private }}"
 
+          # Fetch existing comments on the private issue
           EXISTING=$(retry curl -sS \
             -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
             -H "Accept: application/vnd.github+json" \
             "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments")
 
-          DUPLICATE=$(printf '%s' "$EXISTING" | jq --arg hash "$HASH" '
-            map(select(.body | contains($hash))) | length > 0
+          # Check if a mirrored comment for this source ID already exists
+          MIRROR_COMMENT_ID=$(printf '%s' "$EXISTING" | jq -r --arg sid "$SOURCE_ID" '
+            map(select(.body | contains("<!-- mirror-source: " + $sid + " -->"))) | first | .id // empty
           ')
 
-          if [ "$DUPLICATE" = "true" ]; then
-            echo "Comment already mirrored (hash match), skipping."
-            exit 0
+          if [ -n "$MIRROR_COMMENT_ID" ]; then
+            # Check if content actually changed (hash match = no update needed)
+            HASH_MATCH=$(printf '%s' "$EXISTING" | jq --arg hash "$HASH" --arg sid "$SOURCE_ID" '
+              map(select(.body | contains("<!-- mirror-source: " + $sid + " -->")))
+              | first | .body | contains($hash)
+            ')
+
+            if [ "$HASH_MATCH" = "true" ]; then
+              echo "Comment unchanged (hash match), skipping."
+              exit 0
+            fi
+
+            echo "Updating existing mirrored comment ${MIRROR_COMMENT_ID}."
+            JSON=$(jq -n --arg body "$FULL_BODY" '{body: $body}')
+
+            retry curl -sS -X PATCH \
+              -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TARGET_REPO}/issues/comments/${MIRROR_COMMENT_ID}" \
+              -d "$JSON"
+          else
+            echo "Creating new mirrored comment."
+            JSON=$(jq -n --arg body "$FULL_BODY" '{body: $body}')
+
+            retry curl -sS -X POST \
+              -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments" \
+              -d "$JSON"
           fi
-
-          JSON=$(jq -n --arg body "$COMMENT_WITH_HASH" '{body: $body}')
-
-          retry curl -sS -X POST \
-            -H "Authorization: Bearer ${{ secrets.PRIVATE_STARS_TOKEN }}" \
-            -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${TARGET_REPO}/issues/${TARGET_ISSUE}/comments" \
-            -d "$JSON"
